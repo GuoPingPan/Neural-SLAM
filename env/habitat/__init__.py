@@ -3,12 +3,15 @@
 
 import numpy as np
 import torch
-from habitat.config.default import get_config as cfg_env
-from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
 
 from .exploration_env import Exploration_Env
 from .habitat_api.habitat.core.vector_env import VectorEnv
 from .habitat_api.habitat_baselines.config.default import get_config as cfg_baseline
+
+
+from habitat.config.default import get_config as cfg_env
+from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
+
 
 
 def make_env_fn(args, config_env, config_baseline, rank):
