@@ -10,6 +10,7 @@ def make_vec_envs(args):
 
 
 # Adapted from https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail/blob/master/a2c_ppo_acktr/envs.py#L159
+# 将habitat的环境信息进行一个pytorch封装
 class VecPyTorch():
 
     def __init__(self, venv, device):

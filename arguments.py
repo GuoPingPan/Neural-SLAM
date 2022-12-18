@@ -289,6 +289,7 @@ def get_args():
             print("WARNING: Training Neural SLAM module during evaluation")
 
     # 短距离目标不能够大于1m
+    # todo 论文不是指0.25m吗
     assert args.short_goal_dist >= 1, "args.short_goal_dist >= 1"
 
     if args.use_deterministic_local:

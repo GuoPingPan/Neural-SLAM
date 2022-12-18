@@ -71,14 +71,17 @@ class ChannelPool(nn.MaxPool1d):
 class AddBias(nn.Module):
     def __init__(self, bias):
         super(AddBias, self).__init__()
+        # 3,1
         self._bias = nn.Parameter(bias.unsqueeze(1))
 
     def forward(self, x):
         if x.dim() == 2:
+            # 1,3
             bias = self._bias.t().view(1, -1)
         else:
             bias = self._bias.t().view(1, -1, 1, 1)
 
+        # n,3
         return x + bias
 
 
@@ -92,12 +95,23 @@ class Flatten(nn.Module):
 class NNBase(nn.Module):
 
     def __init__(self, recurrent, recurrent_input_size, hidden_size):
-
+        '''
+        Args:
+            Global:
+                recurrent: args.use_recurrent_global, # 0，全局不使用gru
+                recurrent_input_size: g_hidden_size, # 256
+                hidden_size: g_hidden_size # 256
+            Local:
+                recurrent: 1
+                recurrent_input_size: 512
+                hidden_size: 512
+        '''
         super(NNBase, self).__init__()
         self._hidden_size = hidden_size
         self._recurrent = recurrent
 
         if recurrent:
+            # 简化的GRU，是单个cell
             self.gru = nn.GRUCell(recurrent_input_size, hidden_size)
             nn.init.orthogonal_(self.gru.weight_ih.data)
             nn.init.orthogonal_(self.gru.weight_hh.data)
@@ -120,10 +134,13 @@ class NNBase(nn.Module):
 
     def _forward_gru(self, x, hxs, masks):
         if x.size(0) == hxs.size(0):
+            # mask,对于一个完成的场景就mask掉
             x = hxs = self.gru(x, hxs * masks[:, None])
         else:
             # x is a (T, N, -1) tensor that has been flatten to (T * N, -1)
+            # todo 这里应该是解决后面的场景比历史多的情况，但是没有理解
             N = hxs.size(0)
+            # 这里怎么保证整除
             T = int(x.size(0) / N)
 
             # unflatten

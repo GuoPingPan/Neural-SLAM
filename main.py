@@ -15,15 +15,20 @@ from arguments import get_args
 from env import make_vec_envs
 from utils.storage import GlobalRolloutStorage, FIFOMemory
 from utils.optimization import get_optimizer
-from model import RL_Policy, Local_IL_Policy, Neural_SLAM_Module
+
+from model.neural_slam import Neural_SLAM_Module
+from model.global_policy import RL_Policy
+from model.local_policy import Local_IL_Policy
 
 import algo
 
 import sys
 import matplotlib
 
+# Mac OS
 if sys.platform == 'darwin':
     matplotlib.use("tkagg")
+
 import matplotlib.pyplot as plt
 
 # plt.ion()
@@ -40,6 +45,10 @@ if args.cuda:
 
 
 def get_local_map_boundaries(agent_loc, local_sizes, full_sizes):
+    '''
+        获得局部地图的左上角点和右下角点
+        主要是通过以当前位置和local_size去切割出一个local_map
+    '''
     loc_r, loc_c = agent_loc
     local_w, local_h = local_sizes
     full_w, full_h = full_sizes
@@ -63,12 +72,11 @@ def get_local_map_boundaries(agent_loc, local_sizes, full_sizes):
 
 
 def main():
+    '''******************************************** 配置log记录 ********************************************'''
     # Setup Logging
     # args是全局变量，在上面直接就启动了
     #'-d', '--dump_location', type=str, default="./tmp/"
     # '--exp_name', type=str, default="exp1",
-
-    # 配置log记录
     log_dir = "{}/models/{}/".format(args.dump_location, args.exp_name)
     dump_dir = "{}/dump/{}/".format(args.dump_location, args.exp_name)
 
@@ -78,6 +86,7 @@ def main():
     if not os.path.exists("{}/images/".format(dump_dir)):
         os.makedirs("{}/images/".format(dump_dir))
 
+    # pytorch的logging
     logging.basicConfig(
         filename=log_dir + 'train.log',
         level=logging.INFO)
@@ -87,17 +96,21 @@ def main():
 
     # Logging and loss variables
     num_scenes = args.num_processes
-    num_episodes = int(args.num_episodes) # 1000000
+    num_episodes = int(args.num_episodes) # 100,0000
     device = args.device = torch.device("cuda:0" if args.cuda else "cpu")
     policy_loss = 0
+    '''******************************************** 配置log记录 ********************************************'''
 
-    # 构建NSM的loss
+
+    '''******************************************** 初始化loss ********************************************'''
+
+    # 构建NSM的loss,最长的episode是1000
     best_cost = 100000
     costs = deque(maxlen=1000)
     exp_costs = deque(maxlen=1000)
     pose_costs = deque(maxlen=1000)
 
-    # 全局和局部的mask
+    # 场景完成的标记
     g_masks = torch.ones(num_scenes).float().to(device)
     l_masks = torch.zeros(num_scenes).float().to(device)
 
@@ -111,6 +124,7 @@ def main():
         #               1000//25
         traj_lengths = args.max_episode_length // args.num_local_steps
         # n个场景，100000个episodes(回合)，每次局部走25步，最长episodes回合有1000步
+        # 没25步更新一次全局的goal，也相当于每25步记录一次探索地图吧
         explored_area_log = np.zeros((num_scenes, num_episodes, traj_lengths))
         explored_ratio_log = np.zeros((num_scenes, num_episodes, traj_lengths))
 
@@ -129,12 +143,17 @@ def main():
 
     # 限制CPU跑的线程数，不设置的化默认是利用CPU核心数的线程进行训练
     torch.set_num_threads(1)
+    '''******************************************** 初始化loss ********************************************'''
+
+    '''******************************************** 构建环境 ********************************************'''
 
     # Starting environments
     # 和Habitat有关
     envs = make_vec_envs(args)
     obs, infos = envs.reset()
+    '''******************************************** 构建环境 ********************************************'''
 
+    '''******************************************** 初始化地图设置 ********************************************'''
     # Initialize map variables
     ### Full map consists of 4 channels containing the following:
     ### 1. Obstacle Map
@@ -172,7 +191,7 @@ def main():
 
     # Local Map Boundaries
     # 局部地图的边界：左上角和右下角
-    # n，4
+    # n,4
     lmb = np.zeros((num_scenes, 4)).astype(int)
 
     ### Planner pose inputs has 7 dimensions
@@ -182,7 +201,7 @@ def main():
     # planner的输入是long-term goal、location、map
     planner_pose_inputs = np.zeros((num_scenes, 7))
 
-    #
+
     def init_map_and_pose():
         full_map.fill_(0.)
         full_pose.fill_(0.)
@@ -228,11 +247,15 @@ def main():
                             torch.from_numpy(origins[e]).to(device).float()
 
     init_map_and_pose()
+    '''******************************************** 初始化地图设置 ********************************************'''
+
+    '''******************************************** 设置global/local 观测空间 ********************************************'''
 
     # Global policy observation space
     # 8，w，h大小的观测空间，uint类型，每一个值为0或1
     # 4×G×G+4×G×G
     # 评估的时候下采样为4
+    # 只是用来传入shape的
     g_observation_space = gym.spaces.Box(0, 1,
                                          (8,
                                           local_w,
@@ -244,7 +267,8 @@ def main():
                                     shape=(2,), dtype=np.float32)
 
     # Local policy observation space
-    # 当前局部观测空间，3,×128*128
+    # 当前局部观测空间，3×128*128
+    # 只是用来传入shape的
     l_observation_space = gym.spaces.Box(0, 255,
                                          (3,
                                           args.frame_width,
@@ -254,6 +278,9 @@ def main():
     l_hidden_size = args.local_hidden_size
     g_hidden_size = args.global_hidden_size
 
+    '''******************************************** 设置global/local 观测空间 ********************************************'''
+
+    '''******************************************** 构建model ********************************************'''
     # slam
     nslam_module = Neural_SLAM_Module(args).to(device)
     slam_optimizer = get_optimizer(nslam_module.parameters(),
@@ -261,10 +288,11 @@ def main():
 
     # Global policy
     g_policy = RL_Policy(g_observation_space.shape, g_action_space,
-                         base_kwargs={'recurrent': args.use_recurrent_global,
-                                      'hidden_size': g_hidden_size,
-                                      'downscaling': args.global_downscaling
+                         base_kwargs={'recurrent': args.use_recurrent_global, # 全局不使用gru
+                                      'hidden_size': g_hidden_size, # 256
+                                      'downscaling': args.global_downscaling # 2
                                       }).to(device)
+
     g_agent = algo.PPO(g_policy, args.clip_param, args.ppo_epoch,
                        args.num_mini_batch, args.value_loss_coef,
                        args.entropy_coef, lr=args.global_lr, eps=args.eps,
@@ -278,13 +306,27 @@ def main():
     local_optimizer = get_optimizer(l_policy.parameters(),
                                     args.local_optimizer) # adam
 
+    '''******************************************** 构建model ********************************************'''
+
+    '''******************************************** 分配内存 ********************************************'''
+
     # Storage
     g_rollouts = GlobalRolloutStorage(args.num_global_steps,
                                       num_scenes, g_observation_space.shape,
                                       g_action_space, g_policy.rec_state_size,
                                       1).to(device)
+    '''
+        global不用rnn则return 1, local用rnn就是return hidden size
+        def rec_state_size(self):
+        if self._recurrent:
+            return self._hidden_size
+        return 1
+    '''
 
     slam_memory = FIFOMemory(args.slam_memory_size)
+
+    '''******************************************** 分配内存 ********************************************'''
+    '''******************************************** 加载预训练模型 ********************************************'''
 
     def load_model():
 
@@ -316,22 +358,48 @@ def main():
         if not args.train_local:
             l_policy.eval()
 
+    load_model()
+    '''******************************************** 加载预训练模型 ********************************************'''
+
+
+
+    '''******************************************** 加载预训练模型 ********************************************'''
+
+
+    '''******************************************** 第一次初始化 ********************************************'''
+
+    '''
+        这里只是初始化了neural slam模块和global policy模块，local放在了正式运行里面
+    '''
+
+    ''' neural slam '''
+
+    # todo 这里按照意思是两帧的位姿差，但是难道不需要用上一帧图像进行初始化的吗？
+    # 后面用了相同的obs，是第一帧的，所以这里可能是0，需要看habitat是怎么构建的
     # Predict map from frame 1:
     poses = torch.from_numpy(np.asarray(
         [infos[env_idx]['sensor_pose'] for env_idx
          in range(num_scenes)])
     ).float().to(device)
 
-    # 1，2是mapper的输出，3，4是真实的map，5的dx，6是匹配更新后的pose
     # output: proj_pred, fp_exp_pred, map_pred, exp_pred, pose_pred, current_poses
-    # input: obs_last, obs, poses, maps, explored, current_poses,
+    # 1,2是mapper的输出当前agent视角地图
+    # 3,4是完整的的local map(local map和global map共享内存，因此只需要更新localmap)
+    # 5是修正后两帧的位姿估计
+    # 6是匹配更新后的pose(在局部地图下表达)
     _, _, local_map[:, 0, :, :], local_map[:, 1, :, :], _, local_pose = \
         nslam_module(obs, obs, poses, local_map[:, 0, :, :],
                      local_map[:, 1, :, :], local_pose)
+    # input: obs_last, obs, poses, maps, explored, current_poses,
 
-    # Compute Global policy input
+
+    ''' Global policy '''
+
+    ### Compute Global policy input
     locs = local_pose.cpu().numpy()
     global_input = torch.zeros(num_scenes, 8, local_w, local_h)
+
+    # 方向独立出来，并且通过一个embedding layer再作为global的输入
     global_orientation = torch.zeros(num_scenes, 1).long()
 
     for e in range(num_scenes):
@@ -350,19 +418,24 @@ def main():
     g_rollouts.extras[0].copy_(global_orientation)
 
     # Run Global Policy (global_goals = Long-Term Goal)
-    # g_aciton是输出，然后下面经过sigmoid生成action，然后变成long-term goal
-    g_value, g_action, g_action_log_prob, g_rec_states = \
-        g_policy.act(
-            g_rollouts.obs[0],
-            g_rollouts.rec_states[0],
-            g_rollouts.masks[0],
-            extras=g_rollouts.extras[0],
-            deterministic=False
-        )
+    # g_aciton是全局goal的浮点数表达，然后下面经过sigmoid生成action，然后变成long-term goal
+    # 第一个是奖励，第二个是action，第三个是action的概率，第四个是隐变量
+    g_value, g_action, g_action_log_prob, g_rec_states = g_policy.act(
+        g_rollouts.obs[0], # 观测
+        g_rollouts.rec_states[0],
+        g_rollouts.masks[0],
+        extras=g_rollouts.extras[0], # 方向
+        deterministic=False
+    )
 
     cpu_actions = nn.Sigmoid()(g_action).cpu().numpy()
+    # todo 全局还是在local里面吗？ 虽然确实输入的地图大小是降采样后的
     global_goals = [[int(action[0] * local_w), int(action[1] * local_h)]
                     for action in cpu_actions]
+
+
+    ''' planner '''
+
 
     # Compute planner inputs
     # 输入long，location，map，输出short
@@ -391,13 +464,20 @@ def main():
 
     torch.set_grad_enabled(False)
 
+    '''******************************************** 第一次初始化 ********************************************'''
+
+
+
     for ep_num in range(num_episodes):
         for step in range(args.max_episode_length):
             total_num_steps += 1
 
-            # 局部25步，全局40步
+            # 每40次global policy训练一次,而每个全局又包含25个局部
+            # num_local_steps = 25，num_global_steps=40
             g_step = (step // args.num_local_steps) % args.num_global_steps
             eval_g_step = step // args.num_local_steps + 1
+
+            # 每25局部训练一次
             l_step = step % args.num_local_steps
 
             # ------------------------------------------------------------------
@@ -405,11 +485,12 @@ def main():
             del last_obs
             last_obs = obs.detach()
             local_masks = l_masks
-            local_goals = output[:, :-1].to(device).long()
+            local_goals = output[:, :-1].to(device).long() # short-term goal
 
             if args.train_local:
                 torch.set_grad_enabled(True)
 
+            # 行动   每个行动的概率    隐层信息
             action, action_prob, local_rec_states = l_policy(
                 obs,
                 local_rec_states,
@@ -607,6 +688,7 @@ def main():
             # ------------------------------------------------------------------
             # Train Neural SLAM Module
             if args.train_slam and len(slam_memory) > args.slam_batch_size:
+                # 迭代优化10轮
                 for _ in range(args.slam_iterations):
                     inputs, outputs = slam_memory.sample(args.slam_batch_size)
                     b_obs_last, b_obs, b_poses = inputs
@@ -657,6 +739,8 @@ def main():
 
             # ------------------------------------------------------------------
             # Train Local Policy
+            # 每5次进行迭代，一个l_step是25步，也就是一次全局更新需要25*40个step，其中包含了5*40个local step
+            # local_policy_update_freq = 5
             if (l_step + 1) % args.local_policy_update_freq == 0 \
                     and args.train_local:
                 local_optimizer.zero_grad()
@@ -669,6 +753,7 @@ def main():
 
             # ------------------------------------------------------------------
             # Train Global Policy
+            # 全局更新达到40才进行优化
             if g_step % args.num_global_steps == args.num_global_steps - 1 \
                     and l_step == args.num_local_steps - 1:
                 if args.train_global:
@@ -695,6 +780,7 @@ def main():
 
             # ------------------------------------------------------------------
             # Logging
+            # 10步记一次
             if total_num_steps % args.log_interval == 0:
                 end = time.time()
                 time_elapsed = time.gmtime(end - start)
@@ -756,6 +842,7 @@ def main():
 
             # ------------------------------------------------------------------
             # Save best models
+            # 每时每刻都在记录最优的
             if (total_num_steps * num_scenes) % args.save_interval < \
                     num_scenes:
 
@@ -784,6 +871,7 @@ def main():
                     best_g_reward = np.mean(g_episode_rewards)
 
             # Save periodic models
+            # save_periodic = 50,0000
             if (total_num_steps * num_scenes) % args.save_periodic < \
                     num_scenes:
                 step = total_num_steps * num_scenes

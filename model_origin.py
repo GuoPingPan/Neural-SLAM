@@ -18,6 +18,7 @@ class Global_Policy(NNBase):
 
         out_size = int(input_shape[1] / 16. * input_shape[2] / 16.)
 
+        # 5 Conv
         self.main = nn.Sequential(
             nn.MaxPool2d(2),
             nn.Conv2d(8, 32, 3, stride=1, padding=1),
@@ -36,23 +37,37 @@ class Global_Policy(NNBase):
             Flatten()
         )
 
+        # 3 FC
         self.linear1 = nn.Linear(out_size * 32 + 8, hidden_size)
         self.linear2 = nn.Linear(hidden_size, 256)
         self.critic_linear = nn.Linear(256, 1)
+
+        # orientation embedding
         self.orientation_emb = nn.Embedding(72, 8)
         self.train()
 
     def forward(self, inputs, rnn_hxs, masks, extras):
+        # n,8,G,G -> n,32,G/16,G/16 -> n,7200
         x = self.main(inputs)
+
+        # 将方向为1的离散整型long编码为8长度
+        # 离散单位为5°，72*5=360
+        # n*8
         orientation_emb = self.orientation_emb(extras).squeeze(1)
+
+        # n*7200+8
         x = torch.cat((x, orientation_emb), 1)
 
+        # n*hidden_size
         x = nn.ReLU()(self.linear1(x))
         if self.is_recurrent:
+            # global = False, local = true
             x, rnn_hxs = self._forward_gru(x, rnn_hxs, masks)
 
+        # n*256
         x = nn.ReLU()(self.linear2(x))
 
+        # n*1
         return self.critic_linear(x).squeeze(-1), x, rnn_hxs
 
 
@@ -393,6 +408,7 @@ class Local_IL_Policy(NNBase):
         self.train()
 
     def forward(self, rgb, rnn_hxs, masks, extras):
+        # rnn_hxs =  local_rec_states = torch.zeros(num_scenes, l_hidden_size).to(device)
         if self.deterministic:
             x = torch.zeros(extras.size(0), 3)
             for i, stg in enumerate(extras):
@@ -445,6 +461,7 @@ class RL_Policy(nn.Module):
             self.dist = Categorical(self.network.output_size, num_outputs)
         elif action_space.__class__.__name__ == "Box":
             num_outputs = action_space.shape[0]
+
             self.dist = DiagGaussian(self.network.output_size, num_outputs)
         else:
             raise NotImplementedError

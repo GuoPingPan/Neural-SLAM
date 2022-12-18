@@ -30,7 +30,7 @@ import env.habitat.utils.pose as pu
 import env.habitat.utils.visualizations as vu
 from env.habitat.utils.supervision import HabitatMaps
 
-from model import get_grid
+from model_origin import get_grid
 
 
 def _preprocess_depth(depth):

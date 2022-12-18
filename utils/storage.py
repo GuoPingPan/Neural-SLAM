@@ -25,6 +25,8 @@ class RolloutStorage(object):
             action_type = torch.float32
 
         self.obs = torch.zeros(num_steps + 1, num_processes, *obs_shape)
+
+        #
         self.rec_states = torch.zeros(num_steps + 1, num_processes,
                                       rec_state_size)
         self.rewards = torch.zeros(num_steps, num_processes)
@@ -184,6 +186,7 @@ class GlobalRolloutStorage(RolloutStorage):
 
     def __init__(self, num_steps, num_processes, obs_shape, action_space,
                  rec_state_size, extras_size):
+        # extras_size = 1
         super(GlobalRolloutStorage, self).__init__(num_steps, num_processes,
                                                    obs_shape, action_space, rec_state_size)
         self.extras = torch.zeros((num_steps + 1, num_processes, extras_size),
